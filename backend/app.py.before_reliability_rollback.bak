@@ -1,0 +1,447 @@
+import os
+from pathlib import Path
+from flask import Flask, request, render_template_string, abort
+
+# Ensure the project root .env is loaded for any future API calls (optional)
+project_root = Path(__file__).resolve().parent.parent
+env_path = project_root / ".env"
+if env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=env_path)
+
+# Import the estimator + high-level orchestration
+try:
+    from .price_estimator import estimate_price, analyze_query, MIN_ELIGIBLE
+except ImportError:
+    from price_estimator import estimate_price, analyze_query, MIN_ELIGIBLE
+
+app = Flask(__name__)
+
+
+def format_inr(value):
+    """Format a numeric value as Indian rupees using Indian digit grouping.
+
+    Returns an em dash for missing or invalid values. This only formats values
+    that already exist in the estimator result; it never invents a price.
+    """
+    if value is None:
+        return "\u2014"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "\u2014"
+    negative = number < 0
+    number = abs(number)
+    whole = int(number)
+    fraction = int(round((number - whole) * 100))
+    if fraction == 100:
+        whole += 1
+        fraction = 0
+    digits = str(whole)
+    if len(digits) > 3:
+        last_three = digits[-3:]
+        rest = digits[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.insert(0, rest)
+        digits = ",".join(groups) + "," + last_three
+    if fraction:
+        digits += ".%02d" % fraction
+    return ("-" if negative else "") + "\u20b9" + digits
+
+
+# Expose the Indian-rupee formatter as a Jinja filter: {{ price|inr }}
+app.jinja_env.filters["inr"] = format_inr
+
+
+def _build_evidence_sections(result):
+    """Map the estimator's evidence categories to consumer-facing sections.
+
+    Every category is kept strictly separate so that confirmed, ambiguous,
+    mismatched, accessory, and multi-source listings are never conflated.
+    """
+    evidence = result.get("evidence") or {}
+    definitions = [
+        (
+            "confirmed",
+            "Exact matches",
+            "Specification match",
+            "match",
+            "These listings state every attribute you searched for. They are the "
+            "listings behind the estimate above.",
+        ),
+        (
+            "ambiguous",
+            "Uncertain listings",
+            "Needs verification",
+            "possible",
+            "These look like the right model but do not confirm every specification, "
+            "so we can't be certain they match. They are shown for context and are not "
+            "used in the estimate.",
+        ),
+        (
+            "mismatches",
+            "Mismatches",
+            "Different specification",
+            "different",
+            "These are related products with a different model, brand, or "
+            "specification. They are not part of the estimate.",
+        ),
+        (
+            "accessories",
+            "Accessories & parts",
+            "Not the product",
+            "different",
+            "These are cases, covers, screen protectors, chargers, manuals or spare "
+            "parts. They mention the product but are not the product, so they are "
+            "excluded from the estimate.",
+        ),
+        (
+            "aggregated",
+            "Verified matches across sources",
+            "Multiple sellers",
+            "aggregate",
+            "These are product matches offered by more than one seller. Each product "
+            "is counted once in the estimate and shown separately here so the same "
+            "item is never counted twice.",
+        ),
+    ]
+    sections = []
+    for key, title, badge, badge_class, blurb in definitions:
+        items = evidence.get(key) or []
+        sections.append({
+            "key": key,
+            "title": title,
+            "badge": badge,
+            "badge_class": badge_class,
+            "blurb": blurb,
+            "items": items,
+        })
+    return sections
+
+
+def _build_availability_view(availability, result=None):
+    """Turn the estimator's Availability Lens data into a render-ready view.
+
+    Every number comes straight from the estimator's eligible listings; this
+    only positions real prices on one shared linear scale and writes
+    plain-language, data-derived explanations.  Nothing here invents a price
+    or recommends a purchase price.
+    """
+    if not availability:
+        return None
+    first = availability.get("first_seen") or {}
+    broader = availability.get("broader") or {}
+    prices = list(broader.get("prices") or [])
+    stats = broader.get("statistics") or {}
+    count = broader.get("priced_count", 0)
+
+    lo = stats.get("minimum", 0.0) if stats else 0.0
+    hi = stats.get("maximum", 0.0) if stats else 0.0
+    median = stats.get("median") if stats else None
+
+    min_pos = _linear_position(lo, hi, lo)
+    max_pos = _linear_position(lo, hi, hi)
+    median_pos = _linear_position(lo, hi, median) if median is not None else 50.0
+    median_align = "center"
+    if median is not None:
+        if median_pos < 12:
+            median_align = "left"
+        elif median_pos > 88:
+            median_align = "right"
+
+    first_row = _group_view(first, "Seen first", "top %s results" % availability.get("first_page_size"))
+    broader_row = _group_view(broader, "All eligible listings", "every eligible listing")
+
+    limitations = (
+        "Google Shopping is not the entire market \u2014 it is only the listings "
+        "this search returned. First-page listings are part of the broader "
+        "eligible set, so the two groups overlap and are not independent "
+        "samples. This view describes the evidence that was found, not a "
+        "recommended buying price."
+    )
+
+    return {
+        "show": bool(count or first.get("listing_count") or broader.get("listing_count")),
+        "first_page_size": availability.get("first_page_size"),
+        "count": count,
+        "listing_count": broader.get("listing_count", 0),
+        "single": count == 1,
+        "has_prices": bool(stats),
+        "median": median,
+        "median_label": ("only listing" if count == 1 else "median") if median is not None else "",
+        "median_pos": round(median_pos, 2),
+        "median_align": median_align,
+        "minimum": lo,
+        "maximum": hi,
+        "min_pos": round(min_pos, 2),
+        "max_pos": round(max_pos, 2),
+        "q1": stats.get("q1") if stats else None,
+        "q3": stats.get("q3") if stats else None,
+        "has_quartiles": bool(stats) and count >= 4,
+        "dots": _price_dots(prices, lo, hi),
+        "compact": _outlier_zoom(prices, stats),
+        "range_explanation": _range_explanation(stats, count),
+        "insights": _lens_insights(stats, count, _outlier_zoom(prices, stats)),
+        "first": first_row,
+        "broader": broader_row,
+        "difference_text": _difference_text(
+            first_row, broader_row,
+            availability.get("comparable", False), availability.get("difference"),
+        ),
+        "limitations": limitations,
+        "confidence": "low",
+        "links": _evidence_links(result),
+    }
+
+
+def _linear_position(lo, hi, value):
+    """Map a real price to a 0-100% position on one shared linear scale.
+
+    All markers use the same numeric scale; positions are strictly
+    proportional to the actual prices.  A single shared scale is used so no
+    marker can misrepresent or distort a price.
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 50.0
+    if lo is None or hi is None or hi <= lo or value != value:
+        return 50.0
+    return round(max(0.0, min(100.0, (value - lo) / (hi - lo) * 100.0)), 2)
+
+
+def _price_dots(prices, lo, hi):
+    """One marker per distinct eligible price, noting how many listings share it."""
+    counts = {}
+    for price in prices:
+        try:
+            key = round(float(price))
+        except (TypeError, ValueError):
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    dots = []
+    for value in sorted(counts):
+        dots.append({
+            "pos": _linear_position(lo, hi, value),
+            "label": format_inr(value),
+            "count": counts[value],
+        })
+    return dots
+
+
+def _outlier_zoom(prices, stats):
+    """Build an optional, clearly-labelled zoomed scale for extreme outliers.
+
+    The full range is always shown on the main scale; this only offers a
+    second linear scale over the central range so the bulk of prices stays
+    readable.  Returns ``None`` when there is nothing to zoom (so the primary
+    view stays a single, simple linear scale).
+    """
+    if not stats or len(prices) < 4:
+        return None
+    q1 = stats.get("q1")
+    q3 = stats.get("q3")
+    if q1 is None or q3 is None or q3 <= q1:
+        return None
+    iqr = q3 - q1
+    lo = stats["minimum"]
+    hi = stats["maximum"]
+    zlo = max(lo, q1 - 1.5 * iqr)
+    zhi = min(hi, q3 + 1.5 * iqr)
+    outside = [p for p in prices if p < zlo or p > zhi]
+    if not outside or (zhi - zlo) >= 0.9 * (hi - lo) or zhi <= zlo:
+        return None
+    return {
+        "lo": zlo,
+        "hi": zhi,
+        "lo_label": format_inr(zlo),
+        "hi_label": format_inr(zhi),
+        "excluded": len(outside),
+        "outside_max": format_inr(max(outside)),
+        "dots": _price_dots([p for p in prices if zlo <= p <= zhi], zlo, zhi),
+        "median_pos": _linear_position(zlo, zhi, stats["median"]),
+    }
+
+
+def _group_view(group, name, sub):
+    """View model for one Availability Lens group (first page or broader set)."""
+    stats = group.get("statistics") or {}
+    priced = group.get("priced_count", 0)
+    return {
+        "name": name,
+        "sub": sub,
+        "listing_count": group.get("listing_count", 0),
+        "priced_count": priced,
+        "sufficient": group.get("sufficient", False),
+        "has_stats": bool(stats),
+        "single": priced == 1,
+        "stats": stats,
+        "median": stats.get("median") if stats else None,
+    }
+
+
+def _range_explanation(stats, count):
+    """A concise, data-derived description of the observed price spread."""
+    if not stats or count == 0:
+        return "No eligible listing with a usable price was found."
+    lo = stats["minimum"]
+    hi = stats["maximum"]
+    med = stats["median"]
+    if count == 1:
+        return "Only one eligible price was found, so there is no range to compare."
+    ratio = (hi - lo) / med if med else 0.0
+    if ratio <= 0.15:
+        return "The observed prices are closely grouped around the middle value."
+    if ratio >= 0.5 or (lo and hi / lo >= 2):
+        return "The observed prices vary considerably across the listings we found."
+    return "The observed prices vary moderately across the listings we found."
+
+
+def _lens_insights(stats, count, compact):
+    """Plain-language takeaways generated only from the observed evidence."""
+    lines = []
+    if count == 0:
+        lines.append("No eligible listing carried a usable price, so there is nothing to chart yet.")
+    elif count == 1:
+        lines.append("We found a single eligible listing, so this is one observation rather than a market price.")
+    else:
+        lines.append(_range_explanation(stats, count))
+        if count < MIN_ELIGIBLE:
+            lines.append("We found only %d matching listing%s, so this estimate is preliminary." % (
+                count, "" if count == 1 else "s"))
+        elif count < 5:
+            lines.append("This reading rests on %d listings \u2014 a small sample, so treat it as indicative." % count)
+    if stats and count >= 4:
+        lines.append("About half the listings sit between %s and %s." % (
+            format_inr(stats["q1"]), format_inr(stats["q3"])))
+    elif count >= 2:
+        lines.append("There are too few listings to describe a middle half of the range.")
+    if compact:
+        lines.append("One price (%s) sits far from the rest; it stays on the full scale so the true range is not hidden." % compact["outside_max"])
+    lines.append("These are the listings this one search returned from Google Shopping, not the whole market.")
+    return lines
+
+
+def _difference_text(first_row, broader_row, comparable, difference):
+    """Compare the first-page group with the broader set in plain language."""
+    first_n = first_row["priced_count"]
+    if comparable and difference:
+        direction = difference.get("direction")
+        percent = difference.get("percent")
+        if direction == "similar" or percent is None:
+            lead = "Eligible prices on the first page are in line with the broader set (medians within 1%)."
+        else:
+            word = "higher" if direction == "higher" else "lower"
+            lead = "Eligible prices on the first page are about %d%% %s than the broader set." % (
+                round(abs(percent)), word)
+        return lead + (
+            " The first-page listings are part of the broader set, so this is a "
+            "contrast within one search rather than a comparison of independent samples."
+        )
+    if first_n == 0:
+        return "No eligible listing on the first page had a usable price, so there is no first-page price to compare."
+    if first_n == 1:
+        return "Only one eligible listing appeared in the first-page group, so we cannot establish a typical first-page price."
+    if first_n == 2:
+        return "The first page had only two eligible priced listings, so a first-page median is not reliable yet."
+    return "The broader eligible set has too few priced listings for a reliable comparison yet."
+
+
+def _evidence_links(result):
+    """Links to the underlying confirmed/aggregated listings, when available."""
+    if not result:
+        return []
+    evidence = result.get("evidence") or {}
+    links = []
+    for item in (evidence.get("confirmed") or []) + (evidence.get("aggregated") or []):
+        url = item.get("url")
+        if not url:
+            continue
+        links.append({
+            "title": item.get("title") or "Listing",
+            "price": item.get("price"),
+            "url": url,
+            "rank": item.get("rank"),
+        })
+    return links
+
+
+
+def _render_empty(subject, reason, detail=None):
+    """Render a friendly empty/error result page (never an unrelated fallback)."""
+    return render_template_string(
+        RESULT_TEMPLATE,
+        result=None,
+        subject=subject,
+        empty=True,
+        empty_reason=reason,
+        error_detail=detail,
+        origin=None,
+        sections=[],
+        total_evidence=0,
+        avail=None,
+        reliability=None,
+    )
+
+
+@app.route('/', methods=['GET'])
+def index():
+    return render_template_string(HTML_TEMPLATE, query='')
+
+
+@app.route('/analyze', methods=['GET', 'POST'])
+def analyze():
+    if request.method == 'GET':
+        # Render the home page for GET requests
+        return render_template_string(HTML_TEMPLATE, query='')
+
+    query = request.form.get('query', '').strip()
+    if not query:
+        return render_template_string(HTML_TEMPLATE, query='')
+
+    cache_dir = Path(__file__).resolve().parent.parent / 'cache'
+    if not cache_dir.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = analyze_query(cache_dir=cache_dir, query=query)
+    except Exception as e:  # defensive: surface a helpful message, never a 500
+        return _render_empty(query, 'error', detail=str(e))
+
+    if result.get('error'):
+        return _render_empty(query, result.get('error'), detail=result.get('detail'))
+
+    result.setdefault('statistics', {})
+    result.setdefault('evidence', {})
+    eligible = result.get('summary', {}).get('eligible_price_count', 0)
+    sections = _build_evidence_sections(result)
+    total_evidence = sum(len(section['items']) for section in sections)
+    # The Availability Lens is derived entirely from the same result data; it
+    # makes no further API calls and never invents a price.
+    avail = _build_availability_view(result.get('availability'), result)
+    # Only treat the search as empty when there is genuinely nothing to show.
+    # If listings were classified (matches, near-misses or exclusions) we still
+    # render the evidence page so the reasons stay visible.
+    empty = (eligible == 0 and total_evidence == 0)
+    return render_template_string(
+        RESULT_TEMPLATE,
+        result=result,
+        subject=query,
+        empty=empty,
+        empty_reason=('no_evidence' if empty else ''),
+        error_detail=None,
+        origin=result.get('origin'),
+        sections=sections,
+        total_evidence=total_evidence,
+        avail=avail,
+        
+    )
+
+
+if __name__ == '__main__':
+    # Run on a local development port.
+    app.run(host='0.0.0.0', port=8000, debug=True)

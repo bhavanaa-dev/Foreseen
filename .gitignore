@@ -1,0 +1,14 @@
+# Byte-compiled / optimized / Python files
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+.env
+
+# Packages
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
