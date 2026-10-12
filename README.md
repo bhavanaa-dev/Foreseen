@@ -1,65 +1,96 @@
-# FORESEEN
+# FORESEEN — See Beyond the Price
 
-## Project Overview
+**An evidence-driven tool for making smarter used-product buying decisions.**
 
-FORESEEN is a Python backend that will eventually help users evaluate the true cost of buying second‑hand products (starting with MacBooks). It will pull market prices via SerpApi, gather experience evidence from web searches, and produce cost‑analysis reports.
+🌐 **Live Demo:** [https://foreseen-nine.vercel.app/](https://foreseen-nine.vercel.app/)
 
-## Quick Start (Windows PowerShell)
+FORESEEN helps users evaluate used-product prices using market listings, specification matching, statistical analysis, and transparent confidence indicators. Instead of relying on a single listing or an arbitrary estimate, it helps users understand the available market evidence before making a purchase.
 
-1. **Verify Python is installed**
-   ```powershell
-   py --version
-   ```
-   You should see a version like `Python 3.12.x`.
+## ✨ Features
 
-2. **Create a virtual environment**
-   ```powershell
-   py -m venv venv
-   ```
+- **Market Price Analysis** — Analyze used-product prices using real marketplace search results.
+- **Specification Matching** — Compare listings based on relevant product specifications to improve price comparisons.
+- **Price Statistics** — Understand market price ranges, averages, and variation.
+- **Confidence Indicators** — See how much supporting evidence is available for an estimate.
+- **Availability Lens** — Explore listing availability and compare the first-page results with the broader market.
+- **Evidence-Based Results** — Avoid misleading estimates when relevant market data is insufficient.
+- **Clean User Interface** — A simple, modern interface designed to make buying decisions easier.
 
-3. **Activate the virtual environment**
-   ```powershell
-   .\venv\Scripts\Activate.ps1
-   ```
-   (If you get an execution‑policy error, run `Set‑ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first.)
+## 🛠️ Tech Stack
 
-4. **Install dependencies**
-   ```powershell
-   py -m pip install -r requirements.txt
-   ```
+- **Backend:** Python, Flask
+- **Market Data:** SerpApi Google Shopping
+- **Frontend:** HTML, CSS, JavaScript, Jinja templates
+- **Deployment:** Vercel
 
-5. **Configure the SerpApi key**
-   - Copy the example file:
-     ```powershell
-     cp .env.example .env
-     ```
-   - Open `.env` in your editor and set your key:
-     ```
-     SERPAPI_API_KEY=your_actual_key_here
-     ```
-   - **Never** commit `.env` to version control. It is already ignored via `.gitignore`.
+## ⚙️ How It Works
 
-6. **Run the backend sanity check**
-   ```powershell
-   py -m backend.main
-   ```
-   You should see a message confirming that the SerpApi key is configured, or an error if it is missing.
+1. Enter the product you want to evaluate.
+2. FORESEEN retrieves relevant shopping listings.
+3. The system compares product specifications and filters relevant evidence.
+4. Price statistics and confidence indicators are calculated from the available data.
+5. Review the results and use the market evidence to make a more informed buying decision.
 
-## Project Structure
+## 🚀 Getting Started
 
-```
-FORESEEN/
-├─ backend/          # Python package containing the application logic
-│   ├─ __init__.py
-│   └─ main.py       # Entry point – checks the SerpApi key
-├─ cache/            # Placeholder for future cached data
-├─ tests/            # Placeholder for unit tests
-├─ .env.example      # Example environment file (do not edit)
-├─ .gitignore        # Ignores virtual env, .env, caches, etc.
-├─ requirements.txt  # Minimal dependencies (requests)
-└─ README.md         # This file
+### Prerequisites
+
+- Python 3.10 or later
+- A SerpApi API key
+
+### Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/bhavanaa-dev/Foreseen.git
+cd Foreseen
 ```
 
-## Next Steps
+Install dependencies:
 
-Once the environment is set up, the next phase will add the actual SerpApi request logic and further modules.
+```bash
+pip install -r requirements.txt
+```
+
+### Environment Variables
+
+Create a `.env` file in the project root and add your SerpApi key:
+
+```env
+SERPAPI_API_KEY=your_serpapi_api_key
+```
+
+Replace `your_serpapi_api_key` with your actual API key. Never commit your `.env` file or expose your API key publicly.
+
+### Run Locally
+
+Start the Flask application using the project's configured entry point. If running the backend module directly is supported, use:
+
+```bash
+py backend/app.py
+```
+
+Open the local URL printed in your terminal.
+
+## 🌍 Live Deployment
+
+Try FORESEEN here:
+
+**[https://foreseen-nine.vercel.app/](https://foreseen-nine.vercel.app/)**
+
+## 🎯 Vision
+
+FORESEEN aims to make second-hand shopping more transparent by helping buyers understand not just the price of a product, but also the evidence behind that price.
+
+**See beyond the price. Buy with confidence.**
+
+## 👩‍💻 Author
+
+**Bhavana S**
+
+GitHub: [@bhavanaa-dev](https://github.com/bhavanaa-dev)
+
+---
+
+*FORESEEN — Better decisions start with better evidence.*
